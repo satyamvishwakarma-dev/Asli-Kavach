@@ -1,3 +1,5 @@
 .venv/
 
-audio_deepfake_model.zip
+model/
+test_content/
+audio_deepfake_model/
