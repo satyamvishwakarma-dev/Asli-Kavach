@@ -3,3 +3,8 @@
 model/
 test_content/
 audio_deepfake_model/
+face_model/
+video model/
+voice_model/
+venv/
+*.zip

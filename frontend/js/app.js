@@ -71,8 +71,7 @@ function setIdle(title, sub) { $('vt').textContent = title; $('vt').className = 
 function setVerdict(v) {
     const fake = v >= 50, t = TXT[mode][fake ? 'f' : 'r'];
     $('vt').textContent = t[0]; $('vt').className = 'vt ' + (fake ? 'fake' : 'real'); $('vs').textContent = t[1]; $('spPct').textContent = v.toFixed(1) + '%';
-    $('spBar').style.width = v + '\%'; $('spBar').style.background = fake ? '#FF5F5F' : '#33D89C';
-    drawHeat(v);
+    $('spBar').style.width = v + '%'; $('spBar').style.background = fake ? '#FF5F5F' : '#33D89C';
 }
 function drawHeat(v) {
     hctx.clearRect(0, 0, heat.width, heat.height);
@@ -269,17 +268,9 @@ $('injectBtn').addEventListener('click', () => { stopLive(); $('fileInput').clic
     else { $('ph').textContent = 'Audio file loaded'; } $('fileInput').value = '';
 });
 
-const API_URL = 'http://127.0.0.1:7860';
+const API_URL = 'http://127.0.0.1:8000';
 const LIVE_URL = localStorage.getItem('asli_live_url') || 'http://127.0.0.1:8000';
-const ENDPOINT = { image: '/detect', video: '/detect_video', audio: '/detect_audio' };
-let gradioClient = null;
-async function getClient() {
-    if (!gradioClient) {
-        const { Client } = await import('https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js');
-        gradioClient = await Client.connect(API_URL);
-    }
-    return gradioClient;
-}
+const ENDPOINT = { image: '/detect_image', video: '/detect_video', audio: '/detect_audio' };
 function drawFrames(arr) {
     hctx.clearRect(0, 0, heat.width, heat.height);
     const w = heat.width / arr.length;
@@ -292,13 +283,26 @@ function drawFrames(arr) {
 async function runModel() {
     const m = mode, f = curFile;
     $('runBtn').disabled = true; $('sStatus').textContent = 'ANALYZING'; setState('ANALYZING', true);
-    setIdle('ANALYZING…', m === 'video' ? 'Sampling frames and scoring each one (first run can be slow)' : 'Sending file to the model');
     const t0 = performance.now();
     try {
-        const c = await getClient();
-        const r = await c.predict(ENDPOINT[m], m === 'image' ? [f, true] : [f]);
+        let r;
+        if (m === 'image') {
+            r = await runApiImage(f);
+        } else if (m === 'video') {
+            const formData = new FormData();
+            formData.append('file', f);
+            formData.append('n_frames', 16);
+            formData.append('shrink', true);
+            const resp = await fetch(API_URL + ENDPOINT[m], { method: 'POST', body: formData });
+            r = await resp.json();
+        } else {
+            const formData = new FormData();
+            formData.append('file', f);
+            const resp = await fetch(API_URL + ENDPOINT[m], { method: 'POST', body: formData });
+            r = await resp.json();
+        }
         if (m !== mode) return;
-        const res = r.data[0];
+        const res = r;
         const v = Math.max(0, Math.min(100, res.fake_prob * 100));
         frames = res.frames_checked || 1; $('sFrames').textContent = frames;
         $('sLat').textContent = Math.round(performance.now() - t0) + ' ms';
@@ -310,13 +314,19 @@ async function runModel() {
         $('sStatus').textContent = 'DONE'; setState('COMPLETE', true);
     } catch (err) {
         console.error(err);
-        setIdle('MODEL UNREACHABLE', 'Could not get a result from ' + API_URL + ': ' + ((err && err.message) || JSON.stringify(err)));
+        setIdle('MODEL UNREACHABLE', 'Could not reach ' + API_URL + ': ' + (err && err.message || ''));
         $('sStatus').textContent = 'ERROR'; setState('ERROR', false);
     }
     $('runBtn').disabled = false;
 }
-$('runBtn').addEventListener('click', () => { if (curFile) runModel(); });
-document.getElementById('navtabs').addEventListener('click', () => { if (!$('page-upload').classList.contains('active')) stopLive(); });
+async function runApiImage(imgData) {
+    const formData = new FormData();
+    formData.append('file', imgData);
+    formData.append('shrink', true);
+    const resp = await fetch(API_URL + ENDPOINT.image, { method: 'POST', body: formData });
+    return resp.json();
+}
+
 function routeFromHash() {
     const h = (location.hash || '').toLowerCase();
     if (h.startsWith('#check')) {
