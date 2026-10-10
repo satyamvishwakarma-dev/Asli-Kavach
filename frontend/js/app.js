@@ -1,9 +1,37 @@
 const pages = ['home', 'upload', 'team', 'contact'];
-function goto(p) {
+const MODE_HASH = { audio: '#check-audio', video: '#check-video', image: '#check-image' };
+function syncHash(page, m) {
+    let h = page === 'upload' ? (MODE_HASH[m || mode] || '#check') : page === 'home' ? '#home' : '#' + page;
+    if (location.hash !== h) history.replaceState(null, '', h);
+}
+function goto(p, push = true) {
     pages.forEach(id => document.getElementById('page-' + id).classList.toggle('active', id === p));
     [...document.getElementById('navtabs').children].forEach(b => b.classList.toggle('active', b.dataset.page === p));
+    const bar = document.querySelector('.topbar');
+    bar.classList.toggle('is-check', p === 'upload');
+    bar.classList.remove('is-hidden');
+    if (push) syncHash(p);
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
+
+/* Floating bar: hide on scroll down, show on scroll up */
+(function initTopbarScroll() {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const bar = document.querySelector('.topbar');
+    let lastY = window.scrollY, ticking = false;
+    window.addEventListener('scroll', () => {
+        if (ticking) return;
+        ticking = true;
+        requestAnimationFrame(() => {
+            const y = window.scrollY;
+            bar.classList.toggle('scrolled', y > 24);
+            if (y > 140 && y > lastY + 6) bar.classList.add('is-hidden');
+            else if (y < lastY - 6 || y < 140) bar.classList.remove('is-hidden');
+            lastY = y;
+            ticking = false;
+        });
+    }, { passive: true });
+})();
 document.getElementById('navtabs').addEventListener('click', e => {
     const b = e.target.closest('button'); if (b) goto(b.dataset.page);
 });
@@ -65,15 +93,20 @@ function resetAll() {
     setState('IDLE', false);
     setIdle('AWAITING INPUT', mode === 'audio' ? 'Start listening or inject a file to begin.' : mode === 'image' ? 'Inject an image file to begin.' : 'Inject a video file to begin.');
 }
-function setMode(m) {
+function setMode(m, push = true) {
     mode = m;
-    [...$('modeSwitch').children].forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+    [...$('modeSwitch').children].forEach(b => {
+        const on = b.dataset.mode === m;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
     const a = m === 'audio';
     $('fileInput').accept = { audio: 'audio/*', video: 'video/*', image: 'image/*' }[m]; $('leftTitle').textContent = a ? 'Audio telemetry stream' : m === 'image' ? 'Image injection stream' : 'Video injection stream';
     $('liveBtn').style.display = a ? '' : 'none'; $('sStatusLbl').textContent = a ? 'VAD status' : 'Input status';
     $('meta').innerHTML = a ? 'RATE: 16 kHz<br>WINDOW: 3s' : m === 'image' ? 'MODEL: ViT-Base (fine-tuned)<br>INPUT: IMAGE FILE' : 'FRAMES: 16 evenly spaced<br>MODEL: ViT (frame-level)'; $('heatTitle').textContent = a ? 'Spectral anomaly heatmap' : m === 'image' ? 'Anomaly heatmap' : 'Frame anomaly heatmap';
     $('heatNote').textContent = m === 'video' ? 'Fake probability per sampled frame' : m === 'image' ? 'Illustrative only' : 'Demo visualization'; $('note').textContent = a ? 'Uploaded audio files use the trained voice model. Live microphone mode is still a demo.' : m === 'image' ? 'Live model: image verdicts come from the trained detector. The heatmap is decorative.' : 'Live model: the video is sampled into frames and each frame is scored by the image detector.';
     resetAll();
+    if (push && $('page-upload').classList.contains('active')) syncHash('upload', m);
 }
 $('modeSwitch').addEventListener('click', e => { const b = e.target.closest('button'); if (b && b.dataset.mode !== mode) setMode(b.dataset.mode); });
 
@@ -184,4 +217,19 @@ async function runModel() {
 }
 $('runBtn').addEventListener('click', () => { if (curFile) runModel(); });
 document.getElementById('navtabs').addEventListener('click', () => { if (!$('page-upload').classList.contains('active')) stopLive(); });
-setMode('audio');
+function routeFromHash() {
+    const h = (location.hash || '').toLowerCase();
+    if (h.startsWith('#check')) {
+        const m = h.includes('video') ? 'video' : h.includes('image') ? 'image' : h.includes('audio') ? 'audio' : mode;
+        goto('upload', false);
+        if (m !== mode) setMode(m, false);
+        else syncHash('upload', mode);
+    } else if (h === '#team' || h === '#contact' || h === '#home') {
+        goto(h.slice(1) === 'home' ? 'home' : h.slice(1), false);
+    } else {
+        goto('home', false);
+    }
+}
+window.addEventListener('hashchange', routeFromHash);
+setMode('audio', false);
+routeFromHash();

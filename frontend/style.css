@@ -45,6 +45,7 @@ body {
 .app-content {
     position: relative;
     z-index: 1;
+    padding-top: 12px;
 }
 
 a {
@@ -62,9 +63,10 @@ nav {
 }
 
 .navrow {
-    max-width: 960px;
+    max-width: none;
+    width: 100%;
     margin: 0 auto;
-    padding: 14px 24px;
+    padding: 12px 16px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -142,7 +144,7 @@ header.hero {
 }
 
 .hero-copy {
-    max-width: 960px;
+    max-width: 1100px;
     margin: 0 auto;
 }
 
@@ -197,7 +199,7 @@ header.hero {
 }
 
 section.section {
-    max-width: 960px;
+    max-width: 1100px;
     margin: 0 auto;
     padding: 52px 24px;
     border-bottom: 1px solid var(--line);
@@ -291,7 +293,7 @@ section.section h3 {
 }
 
 .scanner {
-    max-width: 960px;
+    max-width: 1100px;
     margin: 0 auto;
     padding: 44px 24px 60px;
 }
@@ -587,7 +589,7 @@ canvas#waveform {
 }
 
 .team-wrap {
-    max-width: 960px;
+    max-width: 1100px;
     margin: 0 auto;
     padding: 52px 24px 64px;
 }
@@ -713,7 +715,7 @@ canvas#waveform {
 }
 
 .contact-wrap {
-    max-width: 960px;
+    max-width: 1100px;
     margin: 0 auto;
     padding: 52px 24px 64px;
     display: grid;
@@ -802,7 +804,7 @@ form button {
 }
 
 footer {
-    max-width: 960px;
+    max-width: 1100px;
     margin: 0 auto;
     padding: 28px 24px 60px;
     color: var(--muted);
@@ -1162,13 +1164,30 @@ canvas#heat {
 
 .topbar {
     position: sticky;
-    top: 0;
-    z-index: 20;
+    top: 12px;
+    z-index: 50;
     display: flex;
     align-items: stretch;
-    background: rgba(10, 15, 28, 0.9);
-    backdrop-filter: blur(8px);
-    border-bottom: 1px solid var(--line);
+    width: calc(100% - 24px);
+    max-width: 1100px;
+    margin: 0 auto;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: rgba(13, 21, 38, 0.72);
+    backdrop-filter: blur(14px) saturate(1.2);
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(51, 216, 156, 0.06);
+    transition: transform .28s ease, opacity .28s ease, box-shadow .28s ease;
+}
+
+.topbar.scrolled {
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(51, 216, 156, 0.1);
+}
+
+.topbar.is-hidden {
+    transform: translateY(-140%);
+    opacity: 0;
+    pointer-events: none;
 }
 
 .topbar nav {
@@ -1184,16 +1203,38 @@ canvas#heat {
     align-items: center;
     justify-content: flex-end;
     padding: env(safe-area-inset-top, 0px) 14px 0 0;
+    /* Fixed slot so showing/hiding never shifts navtabs */
+    min-width: 264px;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .18s ease;
+}
+
+.topbar.is-check .modestrip {
+    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
 }
 
 @media(max-width:700px) {
+    .app-content {
+        padding-top: 8px;
+    }
+
     .topbar {
+        top: 8px;
+        width: calc(100% - 16px);
+        border-radius: 14px;
         flex-wrap: wrap;
+        /* Reserve second-row height so strip toggle doesn't jump layout */
+        min-height: 112px;
     }
 
     .modestrip {
         width: 100%;
-        padding: 0 24px 10px;
+        min-width: 0;
+        padding: 0 16px 12px;
     }
 }
 
