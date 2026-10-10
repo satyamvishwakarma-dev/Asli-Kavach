@@ -56,7 +56,7 @@ document.getElementById('contactForm').addEventListener('submit', e => {
     document.getElementById('sentMsg').classList.add('active');
 });
 
-let mode = 'audio', live = false, hasSpeech = false, audioCtx, analyser, micStream, rafId, liveTimer, frames = 0, sp = 50, target = 10, blobs = [], curFile = null;
+let mode = 'audio', live = false, hasSpeech = false, audioCtx, analyser, micStream, rafId, liveTimer, liveWins, frames = 0, sp = 50, target = 10, blobs = [], curFile = null;
 const $ = id => document.getElementById(id);
 const wave = $('wave'), wctx = wave.getContext('2d'), heat = $('heat'), hctx = heat.getContext('2d');
 const TXT = {
@@ -104,31 +104,127 @@ function setMode(m, push = true) {
     $('fileInput').accept = { audio: 'audio/*', video: 'video/*', image: 'image/*' }[m]; $('leftTitle').textContent = a ? 'Audio telemetry stream' : m === 'image' ? 'Image injection stream' : 'Video injection stream';
     $('liveBtn').style.display = a ? '' : 'none'; $('sStatusLbl').textContent = a ? 'VAD status' : 'Input status';
     $('meta').innerHTML = a ? 'RATE: 16 kHz<br>WINDOW: 3s' : m === 'image' ? 'MODEL: ViT-Base (fine-tuned)<br>INPUT: IMAGE FILE' : 'FRAMES: 16 evenly spaced<br>MODEL: ViT (frame-level)'; $('heatTitle').textContent = a ? 'Spectral anomaly heatmap' : m === 'image' ? 'Anomaly heatmap' : 'Frame anomaly heatmap';
-    $('heatNote').textContent = m === 'video' ? 'Fake probability per sampled frame' : m === 'image' ? 'Illustrative only' : 'Demo visualization'; $('note').textContent = a ? 'Uploaded audio files use the trained voice model. Live microphone mode is still a demo.' : m === 'image' ? 'Live model: image verdicts come from the trained detector. The heatmap is decorative.' : 'Live model: the video is sampled into frames and each frame is scored by the image detector.';
+    $('heatNote').textContent = m === 'video' ? 'Fake probability per sampled frame' : m === 'image' ? 'Illustrative only' : 'Demo visualization'; $('note').textContent = a ? 'Live mic hears room + mic noise, which masks AI voice evidence — replayed clips read REAL even when fake. Reliable live path: digital routing (AUX cable / Stereo Mix / VB-Cable) or Inject test file. Sidecars: live ' + LIVE_URL + ', files :7860.' : m === 'image' ? 'Live model: image verdicts come from the trained detector. The heatmap is decorative.' : 'Live model: the video is sampled into frames and each frame is scored by the image detector.';
     resetAll();
     if (push && $('page-upload').classList.contains('active')) syncHash('upload', m);
 }
 $('modeSwitch').addEventListener('click', e => { const b = e.target.closest('button'); if (b && b.dataset.mode !== mode) setMode(b.dataset.mode); });
 
-/* Live audio: listens and verifies continuously, no run button */
+/* Live audio: real 3s windows scored by the FastAPI sidecar (Wav2Vec2) */
+let procNode = null, micSource = null, pcmBuf = [], pcmLen = 0, liveBusy = false, liveEma = null, liveFails = 0, liveSkips = 0, liveLastBlobUrl = null;
 $('liveBtn').addEventListener('click', () => { live ? stopLive(true) : startLive(); });
+async function liveHealth() {
+    try {
+        const r = await fetch(LIVE_URL + '/health');
+        return r.ok;
+    } catch (e) { return false; }
+}
+function encodeWav16k(samples) {
+    const n = samples.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    const ws = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    ws(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); ws(8, 'WAVE'); ws(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    ws(36, 'data'); v.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) { const s = Math.max(-1, Math.min(1, samples[i])); v.setInt16(44 + i * 2, s * 32767, true); }
+    return new Blob([buf], { type: 'audio/wav' });
+}
+function downsample16k(chunks, inRate) {
+    let flat = new Float32Array(pcmLen), o = 0;
+    for (const c of chunks) { flat.set(c, o); o += c.length; }
+    if (inRate === 16000) return flat.slice(-16000 * 3);
+    const ratio = inRate / 16000, len = Math.floor(flat.length / ratio);
+    const out = new Float32Array(Math.min(len, 16000 * 3));
+    const start = Math.max(0, len - out.length);
+    for (let i = 0; i < out.length; i++) out[i] = flat[Math.floor((start + i) * ratio)] || 0;
+    return out;
+}
+async function sendLiveWindow() {
+    if (!live || liveBusy || mode !== 'audio') return;
+    if (!pcmLen) return;
+    const sr = audioCtx.sampleRate;
+    const win = downsample16k(pcmBuf, sr);
+    pcmBuf = []; pcmLen = 0;
+    let e = 0; for (let i = 0; i < win.length; i++) e += win[i] * win[i];
+    const rms = Math.sqrt(e / Math.max(1, win.length));
+    if (rms < 0.012 || win.length < 16000 * 0.5) {
+        // too quiet (e.g. speaker far from mic): skip, but say so
+        liveSkips++;
+        $('sStatus').textContent = 'SILENT';
+        if (liveSkips >= 3 && !hasSpeech) $('vs').textContent = 'Mic level very low (' + rms.toFixed(3) + ') — move the sound source closer to the mic or raise the volume. Windows are skipped until level rises.';
+        return;
+    }
+    liveSkips = 0;
+    liveBusy = true;
+    const t0 = performance.now();
+    try {
+        const wavBlob = encodeWav16k(win);
+        // keep exact bytes sent, so a window can be file-checked for comparison
+        if (liveLastBlobUrl) URL.revokeObjectURL(liveLastBlobUrl);
+        liveLastBlobUrl = URL.createObjectURL(wavBlob);
+        const r = await fetch(LIVE_URL + '/live_audio', { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wavBlob });
+        const j = await r.json();
+        if (!live) return;
+        if (j.voiced === false) { $('sStatus').textContent = 'SILENT'; return; }
+        if (j.fake_prob == null) throw new Error(j.error || 'bad response');
+        liveFails = 0;
+        const v = Math.max(0, Math.min(100, j.fake_prob * 100));
+        liveEma = liveEma == null ? v : liveEma * 0.55 + v * 0.45; // smooth flicker
+        frames += 1; $('sFrames').textContent = frames;
+        const net = Math.round(performance.now() - t0);
+        $('sLat').textContent = (j.latency_ms != null ? Math.round(j.latency_ms) + '+' + Math.max(0, net - Math.round(j.latency_ms)) : net) + ' ms';
+        hasSpeech = true;
+        setVerdict(liveEma);
+        $('fname').textContent = 'Live win #' + frames + ': raw ' + v.toFixed(1) + '% → smooth ' + liveEma.toFixed(1) + '% (lvl ' + rms.toFixed(3) + ')';
+        console.log('[live] win#' + frames, 'rms=' + rms.toFixed(4), 'raw=' + v.toFixed(1) + '%', 'ema=' + liveEma.toFixed(1) + '%');
+        $('sStatus').textContent = 'VOICE'; setState('LIVE', true);
+    } catch (err) {
+        console.error(err);
+        liveFails++;
+        $('sStatus').textContent = 'ERROR'; setState('ERROR', false);
+        $('vs').textContent = 'Live sidecar unreachable at ' + LIVE_URL + ' (' + liveFails + 'x). Start backend/live_server.py. ' + (err && err.message || '');
+    }
+    liveBusy = false;
+}
 async function startLive() {
-    try { micStream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    // Raw mic: browser AEC / noise-suppression / AGC scrub the subtle
+    // vocoder artifacts the fake-detector looks for, biasing live to "real".
+    try { micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1, sampleRate: 16000 } }); }
     catch (err) { $('ph').textContent = 'Microphone access denied'; return; }
     resetAll();
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
     analyser = audioCtx.createAnalyser(); analyser.fftSize = 2048;
-    audioCtx.createMediaStreamSource(micStream).connect(analyser);
-    live = true; hasSpeech = false; sp = 50;
-    target = Math.random() > 0.5 ? 6 + Math.random() * 14 : 68 + Math.random() * 22;
+    micSource = audioCtx.createMediaStreamSource(micStream);
+    micSource.connect(analyser);
+    // raw PCM tap (no ffmpeg needed: we encode 16k WAV client-side)
+    procNode = audioCtx.createScriptProcessor(4096, 1, 1);
+    pcmBuf = []; pcmLen = 0;
+    procNode.onaudioprocess = ev => {
+        if (!live) return;
+        const ch = ev.inputBuffer.getChannelData(0).slice();
+        pcmBuf.push(ch); pcmLen += ch.length;
+        while (pcmLen > audioCtx.sampleRate * 10) { const old = pcmBuf.shift(); pcmLen -= old.length; }
+    };
+    const mute = audioCtx.createGain(); mute.gain.value = 0;
+    micSource.connect(procNode); procNode.connect(mute); mute.connect(audioCtx.destination);
+    live = true; hasSpeech = false; liveEma = null; liveFails = 0; frames = 0;
     $('liveBtn').textContent = 'Halt listening'; $('liveBtn').classList.add('red');
     $('ph').style.display = 'none'; $('sStatus').textContent = 'LISTENING';
-    setState('LIVE', true); setIdle('LISTENING…', 'Speak to start live verification.');
-    drawWave(); liveTimer = setInterval(tick, 700);
+    const ok = await liveHealth();
+    if (!ok) {
+        setIdle('SIDECAR OFFLINE', 'Mic is live but the model sidecar is unreachable at ' + LIVE_URL + '. Run backend/live_server.py, then speak — windows will auto-score once it is up.');
+        setState('LIVE (NO MODEL)', true);
+    } else {
+        setState('LIVE', true); setIdle('LISTENING…', 'Speak — every 3s window is scored by the Wav2Vec2 model.');
+    }
+    drawWave(); liveTimer = setInterval(tick, 700); liveWins = setInterval(sendLiveWindow, 3000);
 }
 function stopLive(reset) {
     if (!live) return;
-    live = false; clearInterval(liveTimer); cancelAnimationFrame(rafId);
+    live = false; clearInterval(liveTimer); clearInterval(liveWins); cancelAnimationFrame(rafId);
+    try { if (procNode) procNode.disconnect(); } catch (e) {}
+    try { if (micSource) micSource.disconnect(); } catch (e) {}
+    procNode = null; micSource = null; pcmBuf = []; pcmLen = 0; liveBusy = false; liveSkips = 0;
     if (micStream) micStream.getTracks().forEach(t => t.stop());
     if (audioCtx) audioCtx.close(); audioCtx = null;
     $('liveBtn').textContent = 'Start listening'; $('liveBtn').classList.remove('red');
@@ -137,16 +233,19 @@ function stopLive(reset) {
     if (reset) $('ph').style.display = 'none';
 }
 function tick() {
-    if (!analyser) return;
+    if (!analyser || !live) return;
     const d = new Uint8Array(analyser.fftSize); analyser.getByteTimeDomainData(d);
     let s = 0; for (const x of d) { const v = (x - 128) / 128; s += v * v; }
     const voice = Math.sqrt(s / d.length) > 0.02;
-    $('sStatus').textContent = voice ? 'VOICE' : 'SILENT'; $('sLat').textContent = (4 + Math.floor(Math.random() * 4)) + ' ms';
-    if (!voice) return;
-    hasSpeech = true; frames += 8 + Math.floor(Math.random() * 6); $('sFrames').textContent = frames;
-    sp += (target - sp) * 0.35 + (Math.random() - 0.5) * 4; sp = Math.max(0, Math.min(100, sp));
-    setVerdict(sp);
+    if (!hasSpeech) $('sStatus').textContent = voice ? 'VOICE' : 'SILENT';
 }
+// Download the exact bytes the last live window sent — file-check them via
+// "Inject test file" to compare live vs file verdict on identical audio.
+window.asliSaveLiveWindow = function () {
+    if (!liveLastBlobUrl) { console.warn('[live] no window scored yet'); return; }
+    const a = document.createElement('a');
+    a.href = liveLastBlobUrl; a.download = 'live-window.wav'; a.click();
+};
 function drawWave() {
     rafId = requestAnimationFrame(drawWave);
     const d = new Uint8Array(analyser.fftSize); analyser.getByteTimeDomainData(d);
@@ -171,6 +270,7 @@ $('injectBtn').addEventListener('click', () => { stopLive(); $('fileInput').clic
 });
 
 const API_URL = 'http://127.0.0.1:7860';
+const LIVE_URL = localStorage.getItem('asli_live_url') || 'http://127.0.0.1:8000';
 const ENDPOINT = { image: '/detect', video: '/detect_video', audio: '/detect_audio' };
 let gradioClient = null;
 async function getClient() {

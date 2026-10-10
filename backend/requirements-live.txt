@@ -1,0 +1,10 @@
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+soundfile>=0.12
+numpy
+scipy
+torch
+transformers>=4.40
+safetensors
+pillow
