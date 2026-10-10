@@ -1314,9 +1314,10 @@ form select option {
 }
 
 * {
-  cursor: url('content/cursor.png'), auto !important;
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 32 32"><defs><filter id="glow"><feDropShadow dx="0" dy="0" stdDeviation="2.5" flood-color="%2333D89C" flood-opacity="0.9"/></filter></defs><g filter="url(%23glow)"><path d="M16 4 L28 28 L16 22 L4 28 Z" fill="%230A0F1C" stroke="%2333D89C" stroke-width="2" stroke-linejoin="round"/><path d="M16 14 L21 21 L16 19 L11 21 Z" fill="%2333D89C"/></g></svg>') 13 3, auto !important;
 }
 
-a, button, .btn, .dropzone, .linkbtn, .flashcard, .pbtn {
-  cursor: url('content/cursor.png'), pointer !important;
+/* Different glowing blue, slightly smaller cursor for links and interactive elements */
+a, button, input, select, textarea, .btn, .dropzone, .linkbtn, .flashcard, .pbtn, .brand {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 32 32"><defs><filter id="glow-link"><feDropShadow dx="0" dy="0" stdDeviation="3.5" flood-color="%235B8DEF" flood-opacity="1"/></filter></defs><g filter="url(%23glow-link)"><path d="M16 4 L28 28 L16 22 L4 28 Z" fill="%230A0F1C" stroke="%235B8DEF" stroke-width="2.5" stroke-linejoin="round"/><path d="M16 14 L21 21 L16 19 L11 21 Z" fill="%235B8DEF"/></g></svg>') 11 2, pointer !important;
 }
